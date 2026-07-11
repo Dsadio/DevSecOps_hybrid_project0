@@ -1,0 +1,3 @@
+region   = "eu-west-3"
+key_name = "votre-cle-ssh-aws"
+my_ip    = "XX.XX.XX.XX/32"

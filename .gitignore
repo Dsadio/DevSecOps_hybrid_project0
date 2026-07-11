@@ -1,0 +1,15 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/terraform.tfvars
+terraform/tfplan
+terraform/*.sarif
+
+# Ansible
+ansible/inventory/aws.ini
+ansible/inventory/onprem.ini
+ansible/*.retry
+
+# Divers
+security/*.json

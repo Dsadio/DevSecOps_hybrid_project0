@@ -1,0 +1,3 @@
+inventory/aws.ini
+inventory/onprem.ini
+*.retry

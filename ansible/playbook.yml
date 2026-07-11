@@ -1,0 +1,77 @@
+---
+- name: Installation et configuration d'Apache
+  hosts: all
+  become: true
+  tasks:
+    # 1. Mise à jour du cache apt
+    - name: Mise à jour du cache apt
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    # 2. Installation d'Apache
+    - name: Installation d'Apache
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+
+    # 3. Désactivation des modules inutiles
+    - name: Désactiver les modules Apache inutiles
+      community.general.apache2_module:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - autoindex
+        - status
+        - userdir
+
+    # 4. Activer le module headers (requis pour la directive Header)
+    - name: Activer le module headers
+      community.general.apache2_module:
+        name: headers
+        state: present
+      notify: restart apache
+
+    # 5. Configuration des en-têtes de sécurité
+    - name: Configurer les en-têtes de sécurité
+      ansible.builtin.copy:
+        dest: /etc/apache2/conf-available/security-headers.conf
+        content: |
+          Header always set X-Frame-Options "SAMEORIGIN"
+          Header always set X-Content-Type-Options "nosniff"
+          Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        mode: '0644'
+
+    # 6. Activer la configuration des en-têtes (idempotent)
+    - name: Activer la configuration des en-têtes
+      ansible.builtin.command: a2enconf security-headers
+      args:
+        creates: /etc/apache2/conf-enabled/security-headers.conf
+      notify: restart apache
+
+    # 7. Page d'accueil personnalisée
+    - name: Supprimer la page par défaut
+      ansible.builtin.file:
+        path: /var/www/html/index.html
+        state: absent
+
+    - name: Déployer la page d'accueil personnalisée
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/index.html"
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    # 8. S'assurer qu'Apache est démarré
+    - name: Vérifier qu'Apache est démarré
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart apache
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
