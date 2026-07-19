@@ -10,10 +10,10 @@ pipeline {
     }
 
     parameters {
-        string(name: 'MY_IP', defaultValue: '', description: 'IP CIDR pour SSH (ex: 1.2.3.4/32)')
+        string(name: 'MY_IP', defaultValue: '', description: 'IP CIDR autorisée pour SSH vers l\'instance AWS (ex: 1.2.3.4/32)')
         string(name: 'KEY_NAME', defaultValue: 'ma-cle-devsecops', description: 'Nom de la paire de clés AWS existante')
         string(name: 'ONPREM_IP', defaultValue: '', description: 'IP de la VM on-premise (infra privée, environnement hybride)')
-        booleanParam(name: 'DESTROY_AFTER_TESTS', defaultValue: false, description: 'Détruire l\'infra AWS automatiquement après les tests (démo/pédagogique uniquement)')
+        booleanParam(name: 'DESTROY_AFTER_TESTS', defaultValue: false, description: 'Détruire l\'infra AWS automatiquement après les tests (démo/pédagogique)')
     }
 
     environment {
@@ -21,13 +21,11 @@ pipeline {
         TF_IN_AUTOMATION = 'true'
         TF_INPUT         = 'false'
 
-        // Déclaration explicite des paramètres en variables d'environnement.
-        // Note : Jenkins expose déjà nativement les paramètres du bloc `parameters {}`
-        // comme variables shell dans les steps sh. Cette déclaration est redondante
-        // fonctionnellement, mais conservée pour la lisibilité du pipeline.
+        // Jenkins expose déjà nativement les paramètres comme variables shell dans les steps sh.
+        // Cette déclaration explicite est redondante fonctionnellement, mais conservée pour la lisibilité.
         MY_IP       = "${params.MY_IP}"
         KEY_NAME    = "${params.KEY_NAME}"
-        ONPREM_IP = "${params.ONPREM_IP}"
+        ONPREM_IP   = "${params.ONPREM_IP}"
     }
 
     stages {
@@ -116,6 +114,11 @@ pipeline {
                                 -out=tfplan
                         """
                     }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'terraform/tfplan', allowEmptyArchive: true
                 }
             }
         }

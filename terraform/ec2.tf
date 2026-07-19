@@ -20,7 +20,7 @@ resource "aws_instance" "web" {
   # ─── Source : https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html ───
   metadata_options {
     http_endpoint = "enabled"
-    http_tokens   = "required"  # IMDSv2 obligatoire
+    http_tokens   = "required" # IMDSv2 obligatoire
   }
 
   # ─── Source : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance#user_data ───
