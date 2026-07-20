@@ -12,8 +12,9 @@ pipeline {
     parameters {
         string(name: 'MY_IP', defaultValue: '', description: 'IP CIDR autorisée pour SSH vers l\'instance AWS (ex: 1.2.3.4/32)')
         string(name: 'KEY_NAME', defaultValue: 'ma-cle-devsecops', description: 'Nom de la paire de clés AWS existante')
-        string(name: 'ONPREM_IP', defaultValue: '', description: 'IP de la VM on-premise (infra privée, environnement hybride)')
-        booleanParam(name: 'DESTROY_AFTER_TESTS', defaultValue: false, description: 'Détruire l\'infra AWS automatiquement après les tests (démo/pédagogique)')
+        string(name: 'ONPREM_IP', defaultValue: '', description: 'IP de la VM on-premise (infra privée, environnement hybride) — non requis si DESTROY_ONLY')
+        booleanParam(name: 'DESTROY_AFTER_TESTS', defaultValue: false, description: 'Détruire l\'infra AWS automatiquement après les tests, en fin de déploiement normal (démo/pédagogique)')
+        booleanParam(name: 'DESTROY_ONLY', defaultValue: false, description: 'Raccourci : ignore le déploiement complet et détruit directement l\'infrastructure existante')
     }
 
     environment {
@@ -31,7 +32,26 @@ pipeline {
     stages {
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 1 : Récupération du code
+        // ÉTAPE 0 : Validation des paramètres selon le mode
+        // ══════════════════════════════════════════════
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (params.MY_IP == null || params.MY_IP.trim().isEmpty()) {
+                        error('Le paramètre MY_IP est requis (nécessaire pour terraform apply comme pour terraform destroy).')
+                    }
+                    if (!params.DESTROY_ONLY && (params.ONPREM_IP == null || params.ONPREM_IP.trim().isEmpty())) {
+                        error('Le paramètre ONPREM_IP est requis en mode déploiement normal (environnement hybride).')
+                    }
+                    if (params.DESTROY_ONLY) {
+                        echo "Mode DESTROY_ONLY activé : le déploiement complet sera ignoré, direction terraform destroy."
+                    }
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════
+        // ÉTAPE 1 : Récupération du code (toujours nécessaire, même pour détruire)
         // ══════════════════════════════════════════════
         stage('Checkout') {
             steps {
@@ -43,6 +63,7 @@ pipeline {
         // ÉTAPE 2 : Vérification de la syntaxe Terraform
         // ══════════════════════════════════════════════
         stage('Terraform Format & Validate') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('terraform') {
                     sh '''
@@ -64,6 +85,7 @@ pipeline {
         // ÉTAPE 3 : Analyse de sécurité Terraform (tfsec) — BLOQUANT
         // ══════════════════════════════════════════════
         stage('Security - tfsec') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('terraform') {
                     sh '''
@@ -79,6 +101,7 @@ pipeline {
         // ÉTAPE 4 : Vérification de la qualité Ansible
         // ══════════════════════════════════════════════
         stage('Quality - ansible-lint') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('ansible') {
                     sh '''
@@ -95,15 +118,8 @@ pipeline {
         // ÉTAPE 5 : Provisionnement AWS via Terraform
         // ══════════════════════════════════════════════
         stage('Terraform Plan') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
-                script {
-                    if (params.MY_IP == null || params.MY_IP.trim().isEmpty()) {
-                        error('Le paramètre MY_IP est requis pour lancer le plan.')
-                    }
-                    if (params.ONPREM_IP == null || params.ONPREM_IP.trim().isEmpty()) {
-                        error('Le paramètre ONPREM_IP est requis (environnement hybride : VM on-premise à configurer).')
-                    }
-                }
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh """
@@ -124,6 +140,7 @@ pipeline {
         }
 
         stage('Terraform Apply') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
@@ -134,6 +151,7 @@ pipeline {
         }
 
         stage('Get Terraform Outputs') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     script {
@@ -160,6 +178,7 @@ pipeline {
         // ÉTAPE 6 : Attente de disponibilité SSH (EC2)
         // ══════════════════════════════════════════════
         stage('Wait for SSH') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
                     set -e
@@ -182,6 +201,7 @@ pipeline {
         // ÉTAPE 7 : Configuration via Ansible - AWS (cloud public)
         // ══════════════════════════════════════════════
         stage('Ansible Deploy - AWS') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-aws',
                                   keyFileVariable: 'AWS_KEY_FILE')]) {
@@ -207,6 +227,7 @@ EOF
         // ÉTAPE 7bis : Configuration via Ansible - VM on-premise (infra privée)
         // ══════════════════════════════════════════════
         stage('Ansible Deploy - Onprem VM') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
                                   keyFileVariable: 'ONPREM_KEY_FILE',
@@ -233,6 +254,7 @@ EOF
         // ÉTAPE 8 : Tests fonctionnels (EC2 public)
         // ══════════════════════════════════════════════
         stage('Functional Tests') {
+            when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
                     set -e
@@ -249,17 +271,45 @@ EOF
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 9 (optionnelle) : Destruction automatique de l'infra AWS
+        // ÉTAPE 9 (optionnelle) : Destruction en fin de déploiement normal
         // ══════════════════════════════════════════════
         stage('Terraform Destroy (optional)') {
             when {
-                expression { return params.DESTROY_AFTER_TESTS }
+                allOf {
+                    expression { return params.DESTROY_AFTER_TESTS }
+                    expression { return !params.DESTROY_ONLY }
+                }
             }
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
                             set -e
+                            terraform destroy -input=false -no-color -auto-approve \
+                                -var="key_name=$KEY_NAME" \
+                                -var="my_ip=$MY_IP"
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════
+        // ÉTAPE 10 : Raccourci de destruction rapide (DESTROY_ONLY)
+        // ══════════════════════════════════════════════
+        stage('Terraform Destroy Only') {
+            when {
+                expression { return params.DESTROY_ONLY }
+            }
+            steps {
+                withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
+                    dir('terraform') {
+                        sh '''
+                            set -e
+                            echo "=== Initialisation Terraform (backend S3 existant) ==="
+                            terraform init -input=false
+
+                            echo "=== Destruction directe de l'infrastructure ==="
                             terraform destroy -input=false -no-color -auto-approve \
                                 -var="key_name=$KEY_NAME" \
                                 -var="my_ip=$MY_IP"
@@ -277,20 +327,32 @@ EOF
         always {
             // Archivage centralisé : couvre tfsec, ansible-lint et le plan Terraform
             // en un seul point, exécuté quel que soit le stage où le pipeline s'arrête.
+            // Ne produit rien de significatif en mode DESTROY_ONLY, ce qui est attendu.
             archiveArtifacts artifacts: 'security/**/*,terraform/tfsec-report.sarif,terraform/tfplan', allowEmptyArchive: true
         }
         success {
-            echo """
-                ✅ DÉPLOIEMENT RÉUSSI
-                URL AWS     : http://${env.AWS_IP}
-                Logs S3     : ${env.LOGS_BUCKET}
-                VM on-prem  : ${params.ONPREM_IP} (configurée via Ansible)
-            """
+            script {
+                if (params.DESTROY_ONLY) {
+                    echo """
+                        ✅ DESTRUCTION TERMINÉE (mode DESTROY_ONLY)
+                        L'infrastructure AWS a été détruite sans repasser par le déploiement complet.
+                    """
+                } else {
+                    echo """
+                        ✅ DÉPLOIEMENT RÉUSSI
+                        URL AWS     : http://${env.AWS_IP}
+                        Logs S3     : ${env.LOGS_BUCKET}
+                        VM on-prem  : ${params.ONPREM_IP} (configurée via Ansible)
+                    """
+                }
+            }
         }
         failure {
             echo '❌ Pipeline échoué.'
             script {
-                if (params.DESTROY_AFTER_TESTS) {
+                if (params.DESTROY_ONLY) {
+                    echo 'Échec en mode DESTROY_ONLY - vérifier manuellement l\'état de l\'infrastructure et du state Terraform.'
+                } else if (params.DESTROY_AFTER_TESTS) {
                     echo 'Rollback automatique demandé (DESTROY_AFTER_TESTS=true) - destruction en cours...'
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
