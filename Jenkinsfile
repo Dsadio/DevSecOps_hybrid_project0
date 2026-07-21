@@ -54,7 +54,7 @@ pipeline {
         // ══════════════════════════════════════════════
         stage('Checkout') {
             steps {
-                git url: 'https://github.com/Dsadio/DevSecOps_hybrid_project.git', branch: 'main'
+                git url: 'https://github.com/Dsadio/DevSecOps_hybrid_project0.git', branch: 'main'
             }
         }
 
