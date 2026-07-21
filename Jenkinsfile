@@ -59,27 +59,36 @@ pipeline {
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 2 : Vérification de la syntaxe Terraform
-        // ══════════════════════════════════════════════
-        stage('Terraform Format & Validate') {
-            when { expression { return !params.DESTROY_ONLY } }
-            steps {
-                dir('terraform') {
-                    sh '''
-                        set -e
-                        echo "=== terraform fmt ==="
-                        terraform fmt -check -recursive -diff
+       // ÉTAPE 2 : Vérification de la syntaxe Terraform
+      // ══════════════════════════════════════════════
+       stage('Terraform Format & Validate') {
+          when {
+              expression { return !params.DESTROY_ONLY }
+               }
 
-                        echo "=== terraform init (backend S3 déjà configuré dans backend.tf) ==="
-                        terraform init -input=false
+      steps {
+            withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
 
-                        echo "=== terraform validate ==="
-                        terraform validate
-                    '''
-                }
+               dir('terraform') {
+
+                sh '''
+                    set -e
+
+                    echo "=== terraform fmt ==="
+                    terraform fmt -check -recursive -diff
+
+
+                    echo "=== terraform init (backend S3) ==="
+                    terraform init -input=false
+
+
+                    echo "=== terraform validate ==="
+                    terraform validate
+                '''
             }
         }
-
+    }
+}
         // ══════════════════════════════════════════════
         // ÉTAPE 3 : Analyse de sécurité Terraform (tfsec) — BLOQUANT
         // ══════════════════════════════════════════════
