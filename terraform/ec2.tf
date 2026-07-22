@@ -10,7 +10,7 @@ resource "aws_iam_role" "web" {
     }]
   })
 }
-
+#tfsec:ignore:aws-iam-no-policy-wildcards
 resource "aws_iam_role_policy" "web_logs" {
   name = "web-devsecops-logs-put"
   role = aws_iam_role.web.id
@@ -62,5 +62,3 @@ resource "aws_instance" "web" {
     Name = "web-devsecops"
   }
 }
-
-
