@@ -74,20 +74,18 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh '''
-                            #!/bin/bash
+                        sh '''#!/bin/bash
+set -euo pipefail
 
-                            set -euo pipefail
+echo "=== terraform fmt ==="
+terraform fmt -check -recursive -diff
 
-                            echo "=== terraform fmt ==="
-                            terraform fmt -check -recursive -diff
+echo "=== terraform init (backend S3) ==="
+terraform init -input=false
 
-                            echo "=== terraform init (backend S3) ==="
-                            terraform init -input=false
-
-                            echo "=== terraform validate ==="
-                            terraform validate
-                        '''
+echo "=== terraform validate ==="
+terraform validate
+'''
                     }
                 }
             }
@@ -100,18 +98,17 @@ pipeline {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('terraform') {
-                    sh '''
-                        #!/bin/bash
-                        set -euo pipefail
-                        echo "=== Scan IaC (bloquant sur sévérité HIGH+) ==="
-                        if command -v trivy >/dev/null 2>&1; then
-                            trivy config . --severity HIGH,CRITICAL --exit-code 1 \
-                                --format sarif --output tfsec-report.sarif
-                        else
-                            # Repli : tfsec est en fin de vie, migrer vers trivy dès que possible.
-                            tfsec . --minimum-severity HIGH --format sarif --out tfsec-report.sarif
-                        fi
-                    '''
+                    sh '''#!/bin/bash
+set -euo pipefail
+echo "=== Scan IaC (bloquant sur sévérité HIGH+) ==="
+if command -v trivy >/dev/null 2>&1; then
+    trivy config . --severity HIGH,CRITICAL --exit-code 1 \
+        --format sarif --output tfsec-report.sarif
+else
+    # Repli : tfsec est en fin de vie, migrer vers trivy dès que possible.
+    tfsec . --minimum-severity HIGH --format sarif --out tfsec-report.sarif
+fi
+'''
                 }
             }
         }
@@ -124,13 +121,12 @@ pipeline {
             steps {
                 dir('ansible') {
                     catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                        sh '''
-                            #!/bin/bash
-                            set -euo pipefail
-                            mkdir -p ../security
-                            echo "=== Scan ansible-lint ==="
-                            ansible-lint playbook.yml --format json > ../security/ansible-lint-report.json
-                        '''
+                        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p ../security
+echo "=== Scan ansible-lint ==="
+ansible-lint playbook.yml --format json > ../security/ansible-lint-report.json
+'''
                     }
                 }
             }
@@ -146,18 +142,17 @@ pipeline {
                     dir('terraform') {
                         // Variables passées via l'environnement shell ($VAR),
                         // jamais par interpolation Groovy : pas d'injection possible.
-                        sh '''    
-                            #!/bin/bash 
-                            set -euo pipefail
-                            terraform init -input=false
-                            terraform plan -input=false -no-color \
-                                -var="key_name=$KEY_NAME" \
-                                -var="my_ip=$MY_IP" \
-                                -out=tfplan
-                            # Version lisible pour archivage : le plan binaire peut
-                            # contenir des valeurs sensibles et n'est pas archivé.
-                            terraform show -no-color tfplan > tfplan.txt
-                        '''
+                        sh '''#!/bin/bash
+set -euo pipefail
+terraform init -input=false
+terraform plan -input=false -no-color \
+    -var="key_name=$KEY_NAME" \
+    -var="my_ip=$MY_IP" \
+    -out=tfplan
+# Version lisible pour archivage : le plan binaire peut
+# contenir des valeurs sensibles et n'est pas archivé.
+terraform show -no-color tfplan > tfplan.txt
+'''
                     }
                 }
             }
@@ -173,11 +168,10 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh '''
-                            #!/bin/bash 
-                            set -euo pipefail
-                            terraform apply -input=false -no-color -auto-approve tfplan
-                        '''
+                        sh '''#!/bin/bash
+set -euo pipefail
+terraform apply -input=false -no-color -auto-approve tfplan
+'''
                     }
                 }
                 script {
@@ -219,22 +213,20 @@ pipeline {
         stage('Wait for SSH') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
-                sh '''
-
-                    #!/bin/bash
-                    set -euo pipefail
-                    echo "=== Attente de la disponibilité SSH sur $AWS_IP ==="
-                    for i in $(seq 1 20); do
-                        if nc -z -w3 "$AWS_IP" 22; then
-                            echo "SSH disponible"
-                            exit 0
-                        fi
-                        echo "Tentative $i/20 - SSH pas encore prêt, attente 10s..."
-                        sleep 10
-                    done
-                    echo "SSH indisponible après 200s - abandon"
-                    exit 1
-                '''
+                sh '''#!/bin/bash
+set -euo pipefail
+echo "=== Attente de la disponibilité SSH sur $AWS_IP ==="
+for i in $(seq 1 20); do
+    if nc -z -w3 "$AWS_IP" 22; then
+        echo "SSH disponible"
+        exit 0
+    fi
+    echo "Tentative $i/20 - SSH pas encore prêt, attente 10s..."
+    sleep 10
+done
+echo "SSH indisponible après 200s - abandon"
+exit 1
+'''
             }
         }
 
@@ -246,28 +238,27 @@ pipeline {
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-aws',
                                   keyFileVariable: 'AWS_KEY_FILE')]) {
-                    sh '''
-                        #!/bin/bash
-                        set -euo pipefail
-                        chmod 600 "$AWS_KEY_FILE"
+                    sh '''#!/bin/bash
+set -euo pipefail
+chmod 600 "$AWS_KEY_FILE"
 
-                        # known_hosts persistant dans le workspace : la clé d'hôte est
-                        # acceptée au premier contact (accept-new) puis vérifiée ensuite,
-                        # au lieu d'être jetée via /dev/null (protection MITM).
-                        KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
-                        touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
-                        ssh-keyscan -T 5 -H "$AWS_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
+# known_hosts persistant dans le workspace : la clé d'hôte est
+# acceptée au premier contact (accept-new) puis vérifiée ensuite,
+# au lieu d'être jetée via /dev/null (protection MITM).
+KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+ssh-keyscan -T 5 -H "$AWS_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
 
-                        mkdir -p ansible/inventory
-                        cat > ansible/inventory/aws.ini <<EOF
+mkdir -p ansible/inventory
+cat > ansible/inventory/aws.ini <<EOF
 [aws]
 $AWS_IP ansible_user=ubuntu ansible_ssh_private_key_file=$AWS_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
 EOF
 
-                        cd ansible
-                        ansible -i inventory/aws.ini aws -m ping
-                        ansible-playbook -i inventory/aws.ini playbook.yml -b
-                    '''
+cd ansible
+ansible -i inventory/aws.ini aws -m ping
+ansible-playbook -i inventory/aws.ini playbook.yml -b
+'''
                 }
             }
         }
@@ -281,25 +272,24 @@ EOF
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
                                   keyFileVariable: 'ONPREM_KEY_FILE',
                                   usernameVariable: 'ONPREM_USER')]) {
-                    sh '''
-                        #!/bin/bash
-                        set -euo pipefail
-                        chmod 600 "$ONPREM_KEY_FILE"
+                    sh '''#!/bin/bash
+set -euo pipefail
+chmod 600 "$ONPREM_KEY_FILE"
 
-                        KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
-                        touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
-                        ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
+KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
 
-                        mkdir -p ansible/inventory
-                        cat > ansible/inventory/onprem.ini <<EOF
+mkdir -p ansible/inventory
+cat > ansible/inventory/onprem.ini <<EOF
 [onprem]
 $ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
 EOF
 
-                        cd ansible
-                        ansible -i inventory/onprem.ini onprem -m ping
-                        ansible-playbook -i inventory/onprem.ini playbook.yml -b
-                    '''
+cd ansible
+ansible -i inventory/onprem.ini onprem -m ping
+ansible-playbook -i inventory/onprem.ini playbook.yml -b
+'''
                 }
             }
         }
@@ -310,19 +300,18 @@ EOF
         stage('Functional Tests') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
-                sh '''
-                    #!/bin/bash
-                    set -euo pipefail
-                    echo "=== Test HTTP ==="
-                    curl -fsS -o /dev/null -w "HTTP %{http_code}\\n" "http://$AWS_IP"
+                sh '''#!/bin/bash
+set -euo pipefail
+echo "=== Test HTTP ==="
+curl -fsS -o /dev/null -w "HTTP %{http_code}\\n" "http://$AWS_IP"
 
-                    echo "=== En-têtes de sécurité ==="
-                    # HSTS n'est émis qu'en HTTPS : non testé ici sur HTTP.
-                    curl -sI "http://$AWS_IP" | grep -iE 'X-Frame-Options|X-Content-Type-Options' || echo "AVERTISSEMENT: en-têtes manquants"
+echo "=== En-têtes de sécurité ==="
+# HSTS n'est émis qu'en HTTPS : non testé ici sur HTTP.
+curl -sI "http://$AWS_IP" | grep -iE 'X-Frame-Options|X-Content-Type-Options' || echo "AVERTISSEMENT: en-têtes manquants"
 
-                    echo "=== Page web accessible ==="
-                    curl -fsS "http://$AWS_IP" | head -n 5
-                '''
+echo "=== Page web accessible ==="
+curl -fsS "http://$AWS_IP" | head -n 5
+'''
             }
         }
 
@@ -339,14 +328,13 @@ EOF
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh '''
-                            #!/bin/bash
-                            set -euo pipefail
-                            terraform init -input=false
-                            terraform destroy -input=false -no-color -auto-approve \
-                                -var="key_name=$KEY_NAME" \
-                                -var="my_ip=$MY_IP"
-                        '''
+                        sh '''#!/bin/bash
+set -euo pipefail
+terraform init -input=false
+terraform destroy -input=false -no-color -auto-approve \
+    -var="key_name=$KEY_NAME" \
+    -var="my_ip=$MY_IP"
+'''
                     }
                 }
             }
@@ -360,17 +348,16 @@ EOF
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh '''
-                            #!/bin/bash
-                            set -euo pipefail
-                            echo "=== Initialisation Terraform (backend S3 existant) ==="
-                            terraform init -input=false
+                        sh '''#!/bin/bash
+set -euo pipefail
+echo "=== Initialisation Terraform (backend S3 existant) ==="
+terraform init -input=false
 
-                            echo "=== Destruction directe de l'infrastructure ==="
-                            terraform destroy -input=false -no-color -auto-approve \
-                                -var="key_name=$KEY_NAME" \
-                                -var="my_ip=$MY_IP"
-                        '''
+echo "=== Destruction directe de l'infrastructure ==="
+terraform destroy -input=false -no-color -auto-approve \
+    -var="key_name=$KEY_NAME" \
+    -var="my_ip=$MY_IP"
+'''
                     }
                 }
             }
@@ -407,13 +394,13 @@ EOF
                     echo 'Rollback automatique (DESTROY_AFTER_TESTS=true, apply effectué) - destruction en cours...'
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
-                            def rc = sh(returnStatus: true, script: '''
-                                set -u
-                                terraform init -input=false && \
-                                terraform destroy -input=false -no-color -auto-approve \
-                                    -var="key_name=$KEY_NAME" \
-                                    -var="my_ip=$MY_IP"
-                            ''')
+                            def rc = sh(returnStatus: true, script: '''#!/bin/bash
+set -u
+terraform init -input=false && \
+terraform destroy -input=false -no-color -auto-approve \
+    -var="key_name=$KEY_NAME" \
+    -var="my_ip=$MY_IP"
+''')
                             if (rc != 0) {
                                 unstable('Échec du destroy de rollback : infrastructure potentiellement orpheline, vérification manuelle requise.')
                             }
