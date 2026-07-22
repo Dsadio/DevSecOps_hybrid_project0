@@ -20,10 +20,9 @@ resource "aws_s3_bucket_public_access_block" "logs" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
-    #tfsec:ignore:aws-s3-encryption-customer-key
-
   bucket = aws_s3_bucket.logs.id
 
+  #tfsec:ignore:aws-s3-encryption-customer-key
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256" # Chiffrement SSE-S3 pour éviter le surcoût KMS dans un projet test
