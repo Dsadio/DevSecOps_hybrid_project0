@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent { label 'terraform' }
 
     options {
         timestamps()
@@ -20,9 +20,10 @@ pipeline {
         AWS_REGION       = 'eu-west-3'
         TF_IN_AUTOMATION = 'true'
         TF_INPUT         = 'false'
+        APPLIED          = 'false'
 
-        // Jenkins expose déjà nativement les paramètres comme variables shell dans les steps sh.
-        // Cette déclaration explicite est redondante fonctionnellement, mais conservée pour la lisibilité.
+        // Exposées comme variables shell : à utiliser via $VAR dans sh ''' ... '''
+        // (jamais via interpolation Groovy) pour éviter toute injection de commandes.
         MY_IP       = "${params.MY_IP}"
         KEY_NAME    = "${params.KEY_NAME}"
         ONPREM_IP   = "${params.ONPREM_IP}"
@@ -31,19 +32,25 @@ pipeline {
     stages {
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 0 : Validation des paramètres selon le mode
+        // ÉTAPE 0 : Validation stricte des paramètres selon le mode
         // ══════════════════════════════════════════════
         stage('Validate Parameters') {
             steps {
                 script {
-                    if (params.MY_IP == null || params.MY_IP.trim().isEmpty()) {
-                        error('Le paramètre MY_IP est requis (nécessaire pour terraform apply comme pour terraform destroy).')
+                    def cidrIPv4 = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)\/(3[0-2]|[12]?\d)$/
+                    def ipv4     = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$/
+
+                    if (!(params.MY_IP?.trim() ==~ cidrIPv4)) {
+                        error('MY_IP invalide : format CIDR IPv4 requis (ex: 1.2.3.4/32). Requis pour apply comme pour destroy.')
                     }
-                    if (!params.DESTROY_ONLY && (params.ONPREM_IP == null || params.ONPREM_IP.trim().isEmpty())) {
-                        error('Le paramètre ONPREM_IP est requis en mode déploiement normal (environnement hybride).')
+                    if (!(params.KEY_NAME?.trim() ==~ /^[A-Za-z0-9._-]{1,64}$/)) {
+                        error('KEY_NAME invalide : seuls les caractères A-Za-z0-9._- sont autorisés (64 max).')
+                    }
+                    if (!params.DESTROY_ONLY && !(params.ONPREM_IP?.trim() ==~ ipv4)) {
+                        error('ONPREM_IP invalide : adresse IPv4 requise en mode déploiement normal (environnement hybride).')
                     }
                     if (params.DESTROY_ONLY) {
-                        echo "Mode DESTROY_ONLY activé : le déploiement complet sera ignoré, direction terraform destroy."
+                        echo 'Mode DESTROY_ONLY activé : le déploiement complet sera ignoré, direction terraform destroy.'
                     }
                 }
             }
@@ -54,70 +61,73 @@ pipeline {
         // ══════════════════════════════════════════════
         stage('Checkout') {
             steps {
+                cleanWs(notFailBuild: true)
                 git url: 'https://github.com/Dsadio/DevSecOps_hybrid_project0.git', branch: 'main'
             }
         }
 
         // ══════════════════════════════════════════════
-       // ÉTAPE 2 : Vérification de la syntaxe Terraform
-      // ══════════════════════════════════════════════
-       stage('Terraform Format & Validate') {
-          when {
-              expression { return !params.DESTROY_ONLY }
-               }
+        // ÉTAPE 2 : Vérification de la syntaxe Terraform
+        // ══════════════════════════════════════════════
+        stage('Terraform Format & Validate') {
+            when { expression { return !params.DESTROY_ONLY } }
+            steps {
+                withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
+                    dir('terraform') {
+                        sh '''
+                            set -euo pipefail
 
-      steps {
-            withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
+                            echo "=== terraform fmt ==="
+                            terraform fmt -check -recursive -diff
 
-               dir('terraform') {
+                            echo "=== terraform init (backend S3) ==="
+                            terraform init -input=false
 
-                sh '''
-                    set -e
-
-                    echo "=== terraform fmt ==="
-                    terraform fmt -check -recursive -diff
-
-
-                    echo "=== terraform init (backend S3) ==="
-                    terraform init -input=false
-
-
-                    echo "=== terraform validate ==="
-                    terraform validate
-                '''
+                            echo "=== terraform validate ==="
+                            terraform validate
+                        '''
+                    }
+                }
             }
         }
-    }
-}
+
         // ══════════════════════════════════════════════
-        // ÉTAPE 3 : Analyse de sécurité Terraform (tfsec) — BLOQUANT
+        // ÉTAPE 3 : Analyse de sécurité Terraform (trivy, remplaçant de tfsec) — BLOQUANT
         // ══════════════════════════════════════════════
         stage('Security - tfsec') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('terraform') {
                     sh '''
-                        set -e
-                        echo "=== Scan tfsec (bloquant sur sévérité HIGH+) ==="
-                        tfsec . --minimum-severity HIGH --format sarif --out tfsec-report.sarif
+                        set -euo pipefail
+                        echo "=== Scan IaC (bloquant sur sévérité HIGH+) ==="
+                        if command -v trivy >/dev/null 2>&1; then
+                            trivy config . --severity HIGH,CRITICAL --exit-code 1 \
+                                --format sarif --output tfsec-report.sarif
+                        else
+                            # Repli : tfsec est en fin de vie, migrer vers trivy dès que possible.
+                            tfsec . --minimum-severity HIGH --format sarif --out tfsec-report.sarif
+                        fi
                     '''
                 }
             }
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 4 : Vérification de la qualité Ansible
+        // ÉTAPE 4 : Vérification de la qualité Ansible (UNSTABLE si findings)
         // ══════════════════════════════════════════════
         stage('Quality - ansible-lint') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('ansible') {
-                    sh '''
-                        set -e
-                        mkdir -p ../security
-                        echo "=== Scan ansible-lint ==="
-                        ansible-lint playbook.yml --format json > ../security/ansible-lint-report.json || true
-                    '''
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        sh '''
+                            set -euo pipefail
+                            mkdir -p ../security
+                            echo "=== Scan ansible-lint ==="
+                            ansible-lint playbook.yml --format json > ../security/ansible-lint-report.json
+                        '''
+                    }
                 }
             }
         }
@@ -130,19 +140,25 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh """
-                            set -e
+                        // Variables passées via l'environnement shell ($VAR),
+                        // jamais par interpolation Groovy : pas d'injection possible.
+                        sh '''
+                            set -euo pipefail
+                            terraform init -input=false
                             terraform plan -input=false -no-color \
-                                -var="key_name=${params.KEY_NAME}" \
-                                -var="my_ip=${params.MY_IP}" \
+                                -var="key_name=$KEY_NAME" \
+                                -var="my_ip=$MY_IP" \
                                 -out=tfplan
-                        """
+                            # Version lisible pour archivage : le plan binaire peut
+                            # contenir des valeurs sensibles et n'est pas archivé.
+                            terraform show -no-color tfplan > tfplan.txt
+                        '''
                     }
                 }
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'terraform/tfplan', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'terraform/tfplan.txt', allowEmptyArchive: true
                 }
             }
         }
@@ -152,8 +168,16 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
-                        sh 'terraform apply -input=false -no-color -auto-approve tfplan'
+                        sh '''
+                            set -euo pipefail
+                            terraform apply -input=false -no-color -auto-approve tfplan
+                        '''
                     }
+                }
+                script {
+                    // Marqueur pour le rollback : ne détruire en post-failure
+                    // que si un apply a réellement été tenté/effectué.
+                    env.APPLIED = 'true'
                 }
             }
         }
@@ -173,8 +197,9 @@ pipeline {
                                 returnStdout: true
                             ).trim()
                         }
-                        if (!env.AWS_IP) {
-                            error('IP publique EC2 vide - impossible de continuer.')
+                        def ipv4 = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$/
+                        if (!env.AWS_IP || !(env.AWS_IP ==~ ipv4)) {
+                            error('IP publique EC2 vide ou invalide - impossible de continuer.')
                         }
                         echo "IP publique de l'instance : ${env.AWS_IP}"
                     }
@@ -189,7 +214,7 @@ pipeline {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
-                    set -e
+                    set -euo pipefail
                     echo "=== Attente de la disponibilité SSH sur $AWS_IP ==="
                     for i in $(seq 1 20); do
                         if nc -z -w3 "$AWS_IP" 22; then
@@ -214,13 +239,20 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-aws',
                                   keyFileVariable: 'AWS_KEY_FILE')]) {
                     sh '''
-                        set -e
+                        set -euo pipefail
                         chmod 600 "$AWS_KEY_FILE"
+
+                        # known_hosts persistant dans le workspace : la clé d'hôte est
+                        # acceptée au premier contact (accept-new) puis vérifiée ensuite,
+                        # au lieu d'être jetée via /dev/null (protection MITM).
+                        KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+                        touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+                        ssh-keyscan -T 5 -H "$AWS_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
 
                         mkdir -p ansible/inventory
                         cat > ansible/inventory/aws.ini <<EOF
 [aws]
-$AWS_IP ansible_user=ubuntu ansible_ssh_private_key_file=$AWS_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null'
+$AWS_IP ansible_user=ubuntu ansible_ssh_private_key_file=$AWS_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
 EOF
 
                         cd ansible
@@ -241,13 +273,17 @@ EOF
                                   keyFileVariable: 'ONPREM_KEY_FILE',
                                   usernameVariable: 'ONPREM_USER')]) {
                     sh '''
-                        set -e
+                        set -euo pipefail
                         chmod 600 "$ONPREM_KEY_FILE"
+
+                        KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+                        touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+                        ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
 
                         mkdir -p ansible/inventory
                         cat > ansible/inventory/onprem.ini <<EOF
 [onprem]
-$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null'
+$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
 EOF
 
                         cd ansible
@@ -265,12 +301,13 @@ EOF
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
-                    set -e
+                    set -euo pipefail
                     echo "=== Test HTTP ==="
                     curl -fsS -o /dev/null -w "HTTP %{http_code}\\n" "http://$AWS_IP"
 
                     echo "=== En-têtes de sécurité ==="
-                    curl -sI "http://$AWS_IP" | grep -iE 'X-Frame-Options|X-Content-Type-Options|Strict-Transport' || echo "⚠️ En-têtes manquants"
+                    # HSTS n'est émis qu'en HTTPS : non testé ici sur HTTP.
+                    curl -sI "http://$AWS_IP" | grep -iE 'X-Frame-Options|X-Content-Type-Options' || echo "AVERTISSEMENT: en-têtes manquants"
 
                     echo "=== Page web accessible ==="
                     curl -fsS "http://$AWS_IP" | head -n 5
@@ -292,7 +329,8 @@ EOF
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
-                            set -e
+                            set -euo pipefail
+                            terraform init -input=false
                             terraform destroy -input=false -no-color -auto-approve \
                                 -var="key_name=$KEY_NAME" \
                                 -var="my_ip=$MY_IP"
@@ -306,14 +344,12 @@ EOF
         // ÉTAPE 10 : Raccourci de destruction rapide (DESTROY_ONLY)
         // ══════════════════════════════════════════════
         stage('Terraform Destroy Only') {
-            when {
-                expression { return params.DESTROY_ONLY }
-            }
+            when { expression { return params.DESTROY_ONLY } }
             steps {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
-                            set -e
+                            set -euo pipefail
                             echo "=== Initialisation Terraform (backend S3 existant) ==="
                             terraform init -input=false
 
@@ -332,22 +368,16 @@ EOF
     // POST-ACTIONS
     // ══════════════════════════════════════════════
     post {
-        always {
-            // Archivage centralisé : couvre tfsec, ansible-lint et le plan Terraform
-            // en un seul point, exécuté quel que soit le stage où le pipeline s'arrête.
-            // Ne produit rien de significatif en mode DESTROY_ONLY, ce qui est attendu.
-            archiveArtifacts artifacts: 'security/**/*,terraform/tfsec-report.sarif,terraform/tfplan', allowEmptyArchive: true
-        }
         success {
             script {
                 if (params.DESTROY_ONLY) {
                     echo """
-                        ✅ DESTRUCTION TERMINÉE (mode DESTROY_ONLY)
+                        DESTRUCTION TERMINEE (mode DESTROY_ONLY)
                         L'infrastructure AWS a été détruite sans repasser par le déploiement complet.
                     """
                 } else {
                     echo """
-                        ✅ DÉPLOIEMENT RÉUSSI
+                        DEPLOIEMENT REUSSI
                         URL AWS     : http://${env.AWS_IP}
                         Logs S3     : ${env.LOGS_BUCKET}
                         VM on-prem  : ${params.ONPREM_IP} (configurée via Ansible)
@@ -356,28 +386,37 @@ EOF
             }
         }
         failure {
-            echo '❌ Pipeline échoué.'
+            echo 'Pipeline échoué.'
             script {
                 if (params.DESTROY_ONLY) {
                     echo 'Échec en mode DESTROY_ONLY - vérifier manuellement l\'état de l\'infrastructure et du state Terraform.'
-                } else if (params.DESTROY_AFTER_TESTS) {
-                    echo 'Rollback automatique demandé (DESTROY_AFTER_TESTS=true) - destruction en cours...'
+                } else if (params.DESTROY_AFTER_TESTS && env.APPLIED == 'true') {
+                    echo 'Rollback automatique (DESTROY_AFTER_TESTS=true, apply effectué) - destruction en cours...'
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
-                            sh '''
-                                # Init défensif : couvre le cas où le pipeline échoue
-                                # avant même d'avoir initialisé Terraform sur cet agent.
-                                terraform init -input=false || true
+                            def rc = sh(returnStatus: true, script: '''
+                                set -u
+                                terraform init -input=false && \
                                 terraform destroy -input=false -no-color -auto-approve \
                                     -var="key_name=$KEY_NAME" \
-                                    -var="my_ip=$MY_IP" || true
-                            '''
+                                    -var="my_ip=$MY_IP"
+                            ''')
+                            if (rc != 0) {
+                                unstable('Échec du destroy de rollback : infrastructure potentiellement orpheline, vérification manuelle requise.')
+                            }
                         }
                     }
+                } else if (params.DESTROY_AFTER_TESTS) {
+                    echo 'Échec avant Terraform Apply : aucune infrastructure créée, pas de rollback nécessaire.'
                 } else {
                     echo 'Pas de destruction automatique (DESTROY_AFTER_TESTS=false) - infra laissée en place pour investigation manuelle.'
                 }
             }
+        }
+        cleanup {
+            // Après archivage : supprime .terraform/, tfplan, inventaires (IPs) de l'agent.
+            archiveArtifacts artifacts: 'security/**/*,terraform/tfsec-report.sarif,terraform/tfplan.txt', allowEmptyArchive: true
+            cleanWs(notFailBuild: true)
         }
     }
 }

@@ -19,7 +19,7 @@ resource "aws_security_group" "web_sg" {
     description = "HTTP public access"
   }
 
- # Egress ouvert : simplification pédagogique assumée (cf. mémoire §5.1.2).
+  # Egress ouvert : simplification pédagogique assumée (cf. mémoire §5.1.2).
   # Une restriction fine du trafic sortant relève d'une maturité DevSecOps ultérieure.
   egress {
     from_port   = 0
