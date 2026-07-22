@@ -6,7 +6,7 @@ pipeline {
         disableConcurrentBuilds()
         timeout(time: 60, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
-    }
+    }git
 
     parameters {
         string(name: 'MY_IP', defaultValue: '', description: 'IP CIDR autorisée pour SSH vers l\'instance AWS (ex: 1.2.3.4/32)')
@@ -75,6 +75,8 @@ pipeline {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
+                            #!/bin/bash
+
                             set -euo pipefail
 
                             echo "=== terraform fmt ==="
@@ -99,6 +101,7 @@ pipeline {
             steps {
                 dir('terraform') {
                     sh '''
+                        #!/bin/bash
                         set -euo pipefail
                         echo "=== Scan IaC (bloquant sur sévérité HIGH+) ==="
                         if command -v trivy >/dev/null 2>&1; then
@@ -122,6 +125,7 @@ pipeline {
                 dir('ansible') {
                     catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
                         sh '''
+                            #!/bin/bash
                             set -euo pipefail
                             mkdir -p ../security
                             echo "=== Scan ansible-lint ==="
@@ -142,7 +146,8 @@ pipeline {
                     dir('terraform') {
                         // Variables passées via l'environnement shell ($VAR),
                         // jamais par interpolation Groovy : pas d'injection possible.
-                        sh '''
+                        sh '''    
+                            #!/bin/bash 
                             set -euo pipefail
                             terraform init -input=false
                             terraform plan -input=false -no-color \
@@ -169,6 +174,7 @@ pipeline {
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
+                            #!/bin/bash 
                             set -euo pipefail
                             terraform apply -input=false -no-color -auto-approve tfplan
                         '''
@@ -214,6 +220,8 @@ pipeline {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
+
+                    #!/bin/bash
                     set -euo pipefail
                     echo "=== Attente de la disponibilité SSH sur $AWS_IP ==="
                     for i in $(seq 1 20); do
@@ -239,6 +247,7 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-aws',
                                   keyFileVariable: 'AWS_KEY_FILE')]) {
                     sh '''
+                        #!/bin/bash
                         set -euo pipefail
                         chmod 600 "$AWS_KEY_FILE"
 
@@ -273,6 +282,7 @@ EOF
                                   keyFileVariable: 'ONPREM_KEY_FILE',
                                   usernameVariable: 'ONPREM_USER')]) {
                     sh '''
+                        #!/bin/bash
                         set -euo pipefail
                         chmod 600 "$ONPREM_KEY_FILE"
 
@@ -301,6 +311,7 @@ EOF
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 sh '''
+                    #!/bin/bash
                     set -euo pipefail
                     echo "=== Test HTTP ==="
                     curl -fsS -o /dev/null -w "HTTP %{http_code}\\n" "http://$AWS_IP"
@@ -329,6 +340,7 @@ EOF
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
+                            #!/bin/bash
                             set -euo pipefail
                             terraform init -input=false
                             terraform destroy -input=false -no-color -auto-approve \
@@ -349,6 +361,7 @@ EOF
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''
+                            #!/bin/bash
                             set -euo pipefail
                             echo "=== Initialisation Terraform (backend S3 existant) ==="
                             terraform init -input=false
@@ -395,6 +408,7 @@ EOF
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
                             def rc = sh(returnStatus: true, script: '''
+                                #!/bin/bash
                                 set -u
                                 terraform init -input=false && \
                                 terraform destroy -input=false -no-color -auto-approve \
