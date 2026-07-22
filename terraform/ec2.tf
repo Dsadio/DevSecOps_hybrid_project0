@@ -1,4 +1,18 @@
-# ─── Rôle IAM minimal : écriture des logs uniquement ───
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 resource "aws_iam_role" "web" {
   name = "web-devsecops-role"
 
@@ -13,15 +27,15 @@ resource "aws_iam_role" "web" {
 }
 
 resource "aws_iam_role_policy" "web_logs" {
-  name = "web-devsecops-logs-put"
+  name = "web-devsecops-logs-put" 
   role = aws_iam_role.web.id
 
   policy = jsonencode({
-    Version = "2012-10-17"
+    Version = "2012-10-17"  
     Statement = [{
       Sid      = "PutLogsOnly"
       Effect   = "Allow"
-      Action   = "s3:PutObject"
+      Action   = "s3:PutObject"  
       Resource = "${aws_s3_bucket.logs.arn}/*"
     }]
   })
@@ -29,7 +43,7 @@ resource "aws_iam_role_policy" "web_logs" {
 
 resource "aws_iam_instance_profile" "web" {
   name = "web-devsecops-profile"
-  role = aws_iam_role.web.name
+  role = aws_iam_role.web.name  
 }
 
 resource "aws_instance" "web" {
@@ -43,14 +57,14 @@ resource "aws_instance" "web" {
 
   root_block_device {
     volume_size           = 8
-    volume_type           = "gp3"
+    volume_type           = "gp3" 
     delete_on_termination = true
     encrypted             = true
   }
 
   metadata_options {
     http_endpoint = "enabled"
-    http_tokens   = "required" # IMDSv2 obligatoire
+    http_tokens   = "required"
   }
 
   user_data = <<-EOF
@@ -62,4 +76,9 @@ resource "aws_instance" "web" {
   tags = {
     Name = "web-devsecops"
   }
+}
+
+output "public_ip" {
+  description = "Adresse IP publique de l'instance EC2"
+  value       = aws_instance.web.public_ip
 }

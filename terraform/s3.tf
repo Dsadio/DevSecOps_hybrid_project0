@@ -24,7 +24,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      #tfsec:ignore:aws-s3-encryption-customer-key
+      sse_algorithm = "AES256" # Chiffrement SSE-S3 pour éviter le surcoût KMS dans un projet test
     }
   }
 }
@@ -33,8 +34,15 @@ resource "aws_s3_bucket_versioning" "logs" {
   bucket = aws_s3_bucket.logs.id
 
   versioning_configuration {
-    status = "Enabled"
+    status = "Enabled"  
   }
+}
+
+resource "aws_s3_bucket_logging" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  target_bucket = aws_s3_bucket.logs.id
+  target_prefix = "logs/"
 }
 
 resource "aws_s3_bucket_policy" "logs_tls_only" {
