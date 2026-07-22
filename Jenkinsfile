@@ -125,7 +125,7 @@ fi
 set -euo pipefail
 mkdir -p ../security
 echo "=== Scan ansible-lint ==="
-ansible-lint playbook.yml --format json > ../security/ansible-lint-report.json
+ansible-lint playbook.yml -f codeclimate > ../security/ansible-lint-report.json
 '''
                     }
                 }
