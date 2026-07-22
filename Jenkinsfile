@@ -6,7 +6,7 @@ pipeline {
         disableConcurrentBuilds()
         timeout(time: 60, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
-    }git
+    }
 
     parameters {
         string(name: 'MY_IP', defaultValue: '', description: 'IP CIDR autorisée pour SSH vers l\'instance AWS (ex: 1.2.3.4/32)')
@@ -408,7 +408,6 @@ EOF
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
                             def rc = sh(returnStatus: true, script: '''
-                                #!/bin/bash
                                 set -u
                                 terraform init -input=false && \
                                 terraform destroy -input=false -no-color -auto-approve \
