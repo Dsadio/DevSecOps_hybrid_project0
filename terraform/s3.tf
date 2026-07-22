@@ -18,7 +18,7 @@ resource "aws_s3_bucket_public_access_block" "logs" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
-  #tfsec:ignore:aws-s3-encryption-customer-key
+#tfsec:ignore:aws-s3-encryption-customer-key: Using SSE-S3 AES256 instead of KMS to avoid costs in test environment
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
   bucket = aws_s3_bucket.logs.id
