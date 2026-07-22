@@ -1,11 +1,11 @@
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true  
+  enable_dns_support   = true
   enable_dns_hostnames = true
 
   tags = {
-    Name = "vpc-devsecops" 
-  }  
+    Name = "vpc-devsecops"
+  }
 }
 
 resource "aws_flow_log" "main" {
@@ -16,15 +16,15 @@ resource "aws_flow_log" "main" {
 
   tags = {
     Name = "flowlog-devsecops"
-  }  
+  }
 }
 
 resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "${var.region}a" 
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = "${var.region}a"
   #tfsec:ignore:aws-ec2-no-public-ip-subnet
-  map_public_ip_on_launch = true # Garder : instance exposée volontairement (Jenkins + Ansible) 
+  map_public_ip_on_launch = true # Garder : instance exposée volontairement (Jenkins + Ansible)
 
   tags = {
     Name = "subnet-public"
