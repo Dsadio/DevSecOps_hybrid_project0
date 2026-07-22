@@ -1,5 +1,37 @@
-# ─── Source : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance ───
-# ─── Exemple : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance#example-usage ───
+# ─── Rôle IAM minimal : écriture des logs uniquement ───
+resource "aws_iam_role" "web" {
+  name = "web-devsecops-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "web_logs" {
+  name = "web-devsecops-logs-put"
+  role = aws_iam_role.web.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "PutLogsOnly"
+      Effect   = "Allow"
+      Action   = "s3:PutObject"
+      Resource = "${aws_s3_bucket.logs.arn}/*"
+    }]
+  })
+}
+
+resource "aws_iam_instance_profile" "web" {
+  name = "web-devsecops-profile"
+  role = aws_iam_role.web.name
+}
+
 resource "aws_instance" "web" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = "t2.micro"
@@ -7,8 +39,8 @@ resource "aws_instance" "web" {
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
   associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.web.name
 
-  # ─── Source : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance#root_block_device ───
   root_block_device {
     volume_size           = 8
     volume_type           = "gp3"
@@ -16,14 +48,11 @@ resource "aws_instance" "web" {
     encrypted             = true
   }
 
-  # ─── Source : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance#metadata_options ───
-  # ─── Source : https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html ───
   metadata_options {
     http_endpoint = "enabled"
     http_tokens   = "required" # IMDSv2 obligatoire
   }
 
-  # ─── Source : https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance#user_data ───
   user_data = <<-EOF
               #!/bin/bash
               apt-get update -y
