@@ -321,37 +321,6 @@ ansible-playbook -i inventory/aws.ini playbook.yml -b
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 7bis : Configuration via Ansible - VM on-premise (infra privée)
-        // ══════════════════════════════════════════════
-        stage('Ansible Deploy - Onprem VM') {
-            when { expression { return !params.DESTROY_ONLY } }
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
-                                  keyFileVariable: 'ONPREM_KEY_FILE',
-                                  usernameVariable: 'ONPREM_USER')]) {
-                    sh '''#!/bin/bash
-set -euo pipefail
-chmod 600 "$ONPREM_KEY_FILE"
-
-KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
-touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
-ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
-
-mkdir -p ansible/inventory
-cat > ansible/inventory/onprem.ini <<EOF
-[onprem]
-$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
-EOF
-
-cd ansible
-ansible -i inventory/onprem.ini onprem -m ping
-ansible-playbook -i inventory/onprem.ini playbook.yml -b
-'''
-                }
-            }
-        }
-
-        // ══════════════════════════════════════════════
         // ÉTAPE 8 : Tests fonctionnels (EC2 public)
         // ══════════════════════════════════════════════
         stage('Functional Tests') {
