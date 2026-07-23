@@ -7,12 +7,15 @@ repos:
     rev: v4.6.0
     hooks:
       - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^ansible/.*/(templates|files)/
       - id: check-json
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-added-large-files
+        args: [--maxkb=1024]
       - id: detect-private-key
-
+      - id: check-merge-conflict
 
   # ══════════════════════════════════════════════
   # SÉCURITÉ : Détection avancée des secrets
@@ -21,7 +24,6 @@ repos:
     rev: v8.28.0
     hooks:
       - id: gitleaks
-
 
   # ══════════════════════════════════════════════
   # TERRAFORM : Formatage, validation et qualité
@@ -33,7 +35,6 @@ repos:
       - id: terraform_validate
       - id: terraform_tflint
 
-
   # ══════════════════════════════════════════════
   # TERRAFORM SECURITY : Analyse IaC
   # ══════════════════════════════════════════════
@@ -43,13 +44,20 @@ repos:
       - id: tfsec
         files: \.tf$
 
-
   # ══════════════════════════════════════════════
   # ANSIBLE : Validation des playbooks
+  # (collections installées depuis ansible/requirements.yml)
   # ══════════════════════════════════════════════
   - repo: https://github.com/ansible/ansible-lint
     rev: v26.6.0
     hooks:
       - id: ansible-lint
         files: ^ansible/.*\.ya?ml$
+        exclude: ^ansible/.*/(templates|files)/
         language_version: python3.12
+        additional_dependencies:
+          - ansible-core==2.19.5
+        entry: >-
+          bash -c 'ansible-galaxy collection install -r ansible/requirements.yml
+          -p .ansible/collections --force >/dev/null &&
+          ANSIBLE_COLLECTIONS_PATH=.ansible/collections ansible-lint "$@"' --

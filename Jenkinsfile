@@ -22,6 +22,11 @@ pipeline {
         TF_INPUT         = 'false'
         APPLIED          = 'false'
 
+        // Reproductibilité Ansible : collections installées localement dans le
+        // workspace depuis ansible/requirements.yml (source unique de vérité,
+        // même version qu'en local via pre-commit).
+        ANSIBLE_COLLECTIONS_PATH = "${WORKSPACE}/.ansible/collections"
+
         // Exposées comme variables shell : à utiliser via $VAR dans sh ''' ... '''
         // (jamais via interpolation Groovy) pour éviter toute injection de commandes.
         MY_IP       = "${params.MY_IP}"
@@ -63,6 +68,27 @@ pipeline {
             steps {
                 cleanWs(notFailBuild: true)
                 git url: 'https://github.com/Dsadio/DevSecOps_hybrid_project0.git', branch: 'main'
+            }
+        }
+
+        // ══════════════════════════════════════════════
+        // ÉTAPE 1bis : Dépendances Ansible (reproductibilité)
+        // Collections épinglées dans ansible/requirements.yml, installées
+        // dans le workspace : lint et déploiement utilisent exactement
+        // les mêmes versions qu'en local (pre-commit).
+        // ══════════════════════════════════════════════
+        stage('Ansible Dependencies') {
+            when { expression { return !params.DESTROY_ONLY } }
+            steps {
+                sh '''#!/bin/bash
+set -euo pipefail
+echo "=== Installation des collections Ansible depuis ansible/requirements.yml ==="
+mkdir -p "$ANSIBLE_COLLECTIONS_PATH"
+ansible-galaxy collection install -r ansible/requirements.yml \
+    -p "$ANSIBLE_COLLECTIONS_PATH" --force
+echo "=== Collections installées ==="
+ansible-galaxy collection list -p "$ANSIBLE_COLLECTIONS_PATH"
+'''
             }
         }
 
@@ -115,6 +141,8 @@ fi
 
         // ══════════════════════════════════════════════
         // ÉTAPE 4 : Vérification de la qualité Ansible (UNSTABLE si findings)
+        // Utilise ANSIBLE_COLLECTIONS_PATH : community.general résolue
+        // depuis les collections épinglées du workspace.
         // ══════════════════════════════════════════════
         stage('Quality - ansible-lint') {
             when { expression { return !params.DESTROY_ONLY } }
@@ -232,6 +260,8 @@ exit 1
 
         // ══════════════════════════════════════════════
         // ÉTAPE 7 : Configuration via Ansible - AWS (cloud public)
+        // ANSIBLE_COLLECTIONS_PATH (env global) garantit l'usage des
+        // collections épinglées installées à l'étape 1bis.
         // ══════════════════════════════════════════════
         stage('Ansible Deploy - AWS') {
             when { expression { return !params.DESTROY_ONLY } }
@@ -414,7 +444,8 @@ terraform destroy -input=false -no-color -auto-approve \
             }
         }
         cleanup {
-            // Après archivage : supprime .terraform/, tfplan, inventaires (IPs) de l'agent.
+            // Après archivage : supprime .terraform/, tfplan, inventaires (IPs)
+            // et .ansible/collections de l'agent.
             archiveArtifacts artifacts: 'security/**/*,terraform/tfsec-report.sarif,terraform/tfplan.txt', allowEmptyArchive: true
             cleanWs(notFailBuild: true)
         }
