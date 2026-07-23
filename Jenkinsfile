@@ -93,6 +93,24 @@ ansible-galaxy collection list -p "$ANSIBLE_COLLECTIONS_PATH"
         }
 
         // ══════════════════════════════════════════════
+        // ÉTAPE 1ter : Qualité Ansible (ansible-lint) — BLOQUANT
+        // Utilise les collections épinglées installées à l'étape 1bis
+        // (ANSIBLE_COLLECTIONS_PATH), mêmes versions qu'en local (pre-commit).
+        // ══════════════════════════════════════════════
+        stage('Quality - ansible-lint') {
+            when { expression { return !params.DESTROY_ONLY } }
+            steps {
+                dir('ansible') {
+                    sh '''#!/bin/bash
+set -euo pipefail
+echo "=== ansible-lint ==="
+ansible-lint playbook.yml
+'''
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════
         // ÉTAPE 2 : Vérification de la syntaxe Terraform
         // ══════════════════════════════════════════════
         stage('Terraform Format & Validate') {
@@ -118,9 +136,11 @@ terraform validate
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 3 : Analyse de sécurité Terraform (trivy, remplaçant de tfsec) — BLOQUANT
+        // ÉTAPE 3 : Analyse de sécurité IaC (trivy, remplaçant de tfsec) — BLOQUANT
+        // Le rapport garde le nom tfsec-report.sarif pour ne pas casser
+        // l'archivage en post { cleanup }.
         // ══════════════════════════════════════════════
-        stage('Security - tfsec') {
+        stage('Security - IaC Scan (trivy)') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
                 dir('terraform') {
@@ -135,54 +155,6 @@ else
     tfsec . --minimum-severity HIGH --format sarif --out tfsec-report.sarif
 fi
 '''
-                }
-            }
-        }
-
-        // ══════════════════════════════════════════════
-        // ÉTAPE 7bis : Configuration via Ansible - VM on-premise (infra privée)
-        // ══════════════════════════════════════════════
-        stage('Ansible Deploy - Onprem VM') {
-            when { expression { return !params.DESTROY_ONLY } }
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
-                                  keyFileVariable: 'ONPREM_KEY_FILE',
-                                  usernameVariable: 'ONPREM_USER')]) {
-                    sh '''#!/bin/bash
-set -euo pipefail
-chmod 600 "$ONPREM_KEY_FILE"
-
-KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
-touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
-ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null \
-    || echo "AVERTISSEMENT: ssh-keyscan a échoué, la clé d'hôte sera acceptée au premier contact (accept-new)"
-
-mkdir -p ansible/inventory
-cat > ansible/inventory/onprem.ini <<EOF
-[onprem]
-$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
-EOF
-chmod 600 ansible/inventory/onprem.ini
-
-cd ansible
-
-# Retry : pas de stage "Wait for SSH" côté on-prem, on absorbe une latence transitoire.
-for i in 1 2 3; do
-    ansible -i inventory/onprem.ini onprem -m ping && break
-    [ "$i" = 3 ] && { echo "VM on-prem injoignable après 3 tentatives"; exit 1; }
-    echo "Ping $i/3 échoué, nouvelle tentative dans 10s..."
-    sleep 10
-done
-
-ansible-playbook -i inventory/onprem.ini playbook.yml -b
-'''
-                }
-            }
-            post {
-                always {
-                    // Nettoyage défensif : ne pas attendre le cleanWs() global
-                    // (le fichier contient l'IP interne et le chemin de la clé).
-                    sh 'rm -f ansible/inventory/onprem.ini'
                 }
             }
         }
@@ -221,6 +193,13 @@ terraform show -no-color tfplan > tfplan.txt
         stage('Terraform Apply') {
             when { expression { return !params.DESTROY_ONLY } }
             steps {
+                script {
+                    // Marqueur pour le rollback : positionné AVANT l'apply.
+                    // Si l'apply échoue à mi-chemin, des ressources ont pu être
+                    // créées : le rollback doit quand même se déclencher
+                    // (un destroy sur une infra vide est inoffensif).
+                    env.APPLIED = 'true'
+                }
                 withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                     dir('terraform') {
                         sh '''#!/bin/bash
@@ -228,11 +207,6 @@ set -euo pipefail
 terraform apply -input=false -no-color -auto-approve tfplan
 '''
                     }
-                }
-                script {
-                    // Marqueur pour le rollback : ne détruire en post-failure
-                    // que si un apply a réellement été tenté/effectué.
-                    env.APPLIED = 'true'
                 }
             }
         }
@@ -304,13 +278,15 @@ chmod 600 "$AWS_KEY_FILE"
 # au lieu d'être jetée via /dev/null (protection MITM).
 KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
 touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
-ssh-keyscan -T 5 -H "$AWS_IP" >> "$KNOWN_HOSTS" 2>/dev/null || true
+ssh-keyscan -T 5 -H "$AWS_IP" >> "$KNOWN_HOSTS" 2>/dev/null \
+    || echo "AVERTISSEMENT: ssh-keyscan a échoué, la clé d'hôte sera acceptée au premier contact (accept-new)"
 
 mkdir -p ansible/inventory
 cat > ansible/inventory/aws.ini <<EOF
 [aws]
 $AWS_IP ansible_user=ubuntu ansible_ssh_private_key_file=$AWS_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
 EOF
+chmod 600 ansible/inventory/aws.ini
 
 cd ansible
 ansible -i inventory/aws.ini aws -m ping
@@ -318,10 +294,65 @@ ansible-playbook -i inventory/aws.ini playbook.yml -b
 '''
                 }
             }
+            post {
+                always {
+                    // Nettoyage défensif : ne pas attendre le cleanWs() global
+                    // (le fichier contient l'IP et le chemin de la clé).
+                    sh 'rm -f ansible/inventory/aws.ini'
+                }
+            }
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 8 : Tests fonctionnels (EC2 public)
+        // ÉTAPE 8 : Configuration via Ansible - VM on-premise (infra privée)
+        // ══════════════════════════════════════════════
+        stage('Ansible Deploy - Onprem VM') {
+            when { expression { return !params.DESTROY_ONLY } }
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
+                                  keyFileVariable: 'ONPREM_KEY_FILE',
+                                  usernameVariable: 'ONPREM_USER')]) {
+                    sh '''#!/bin/bash
+set -euo pipefail
+chmod 600 "$ONPREM_KEY_FILE"
+
+KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null \
+    || echo "AVERTISSEMENT: ssh-keyscan a échoué, la clé d'hôte sera acceptée au premier contact (accept-new)"
+
+mkdir -p ansible/inventory
+cat > ansible/inventory/onprem.ini <<EOF
+[onprem]
+$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
+EOF
+chmod 600 ansible/inventory/onprem.ini
+
+cd ansible
+
+# Retry : pas de stage "Wait for SSH" côté on-prem, on absorbe une latence transitoire.
+for i in 1 2 3; do
+    ansible -i inventory/onprem.ini onprem -m ping && break
+    [ "$i" = 3 ] && { echo "VM on-prem injoignable après 3 tentatives"; exit 1; }
+    echo "Ping $i/3 échoué, nouvelle tentative dans 10s..."
+    sleep 10
+done
+
+ansible-playbook -i inventory/onprem.ini playbook.yml -b
+'''
+                }
+            }
+            post {
+                always {
+                    // Nettoyage défensif : ne pas attendre le cleanWs() global
+                    // (le fichier contient l'IP interne et le chemin de la clé).
+                    sh 'rm -f ansible/inventory/onprem.ini'
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════
+        // ÉTAPE 9 : Tests fonctionnels (EC2 public)
         // ══════════════════════════════════════════════
         stage('Functional Tests') {
             when { expression { return !params.DESTROY_ONLY } }
@@ -342,7 +373,7 @@ curl -fsS "http://$AWS_IP" | head -n 5
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 9 (optionnelle) : Destruction en fin de déploiement normal
+        // ÉTAPE 10 (optionnelle) : Destruction en fin de déploiement normal
         // ══════════════════════════════════════════════
         stage('Terraform Destroy (optional)') {
             when {
@@ -367,7 +398,7 @@ terraform destroy -input=false -no-color -auto-approve \
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 10 : Raccourci de destruction rapide (DESTROY_ONLY)
+        // ÉTAPE 11 : Raccourci de destruction rapide (DESTROY_ONLY)
         // ══════════════════════════════════════════════
         stage('Terraform Destroy Only') {
             when { expression { return params.DESTROY_ONLY } }
@@ -417,7 +448,7 @@ terraform destroy -input=false -no-color -auto-approve \
                 if (params.DESTROY_ONLY) {
                     echo 'Échec en mode DESTROY_ONLY - vérifier manuellement l\'état de l\'infrastructure et du state Terraform.'
                 } else if (params.DESTROY_AFTER_TESTS && env.APPLIED == 'true') {
-                    echo 'Rollback automatique (DESTROY_AFTER_TESTS=true, apply effectué) - destruction en cours...'
+                    echo 'Rollback automatique (DESTROY_AFTER_TESTS=true, apply tenté) - destruction en cours...'
                     withAWS(credentials: 'aws-creds', region: env.AWS_REGION) {
                         dir('terraform') {
                             def rc = sh(returnStatus: true, script: '''#!/bin/bash
