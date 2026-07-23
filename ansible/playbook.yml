@@ -19,38 +19,28 @@
         state: present
 
 
-    # 3. Vérification des modules Apache actifs
-    - name: Vérifier les modules Apache actifs
-      ansible.builtin.command:
-        cmd: apache2ctl -M
-      register: apache_modules
-      changed_when: false
-
-
-    # 4. Désactivation des modules Apache inutiles
+    # 3. Désactivation des modules Apache inutiles (idempotent, non interactif)
     - name: Désactiver les modules Apache inutiles
-      ansible.builtin.command:
-        cmd: "a2dismod {{ item }}"
+      community.general.apache2_module:
+        name: "{{ item }}"
+        state: absent
+        force: true
       loop:
         - autoindex
         - status
         - userdir
-      when: item in apache_modules.stdout
-      register: disable_modules
-      changed_when: "'Module' in disable_modules.stdout"
       notify: Restart apache
 
 
-    # 5. Activation du module headers
+    # 4. Activation du module headers
     - name: Activer le module headers
-      ansible.builtin.command:
-        cmd: a2enmod headers
-      register: enable_headers
-      changed_when: "'Enabling' in enable_headers.stdout"
+      community.general.apache2_module:
+        name: headers
+        state: present
       notify: Restart apache
 
 
-    # 6. Configuration des en-têtes de sécurité HTTP
+    # 5. Configuration des en-têtes de sécurité HTTP
     - name: Configurer les en-têtes de sécurité
       ansible.builtin.copy:
         dest: /etc/apache2/conf-available/security-headers.conf
@@ -64,7 +54,7 @@
       notify: Restart apache
 
 
-    # 7. Activation de la configuration sécurité
+    # 6. Activation de la configuration sécurité
     - name: Activer la configuration des en-têtes de sécurité
       ansible.builtin.command:
         cmd: a2enconf security-headers
@@ -73,14 +63,14 @@
       notify: Restart apache
 
 
-    # 8. Suppression de la page Apache par défaut
+    # 7. Suppression de la page Apache par défaut
     - name: Supprimer la page Apache par défaut
       ansible.builtin.file:
         path: /var/www/html/index.html
         state: absent
 
 
-    # 9. Déploiement de la page personnalisée
+    # 8. Déploiement de la page personnalisée
     - name: Déployer la page d'accueil personnalisée
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/files/index.html"
@@ -90,7 +80,7 @@
         mode: '0644'
 
 
-    # 10. Vérification du service Apache
+    # 9. Vérification du service Apache
     - name: S'assurer qu'Apache est démarré et activé au démarrage
       ansible.builtin.service:
         name: apache2
