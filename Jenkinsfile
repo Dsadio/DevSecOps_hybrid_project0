@@ -140,34 +140,49 @@ fi
         }
 
         // ══════════════════════════════════════════════
-        // ÉTAPE 4 : Vérification de la qualité Ansible (UNSTABLE si findings)
-        // Collections épinglées du projet UNIQUEMENT : installation depuis
-        // ansible/requirements.yml + ANSIBLE_COLLECTIONS_PATH restreint au
-        // workspace, pour ignorer community.general 9.5.2 du système.
+        // ÉTAPE 7bis : Configuration via Ansible - VM on-premise (infra privée)
         // ══════════════════════════════════════════════
-        stage('Quality - ansible-lint') {
+        stage('Ansible Deploy - Onprem VM') {
             when { expression { return !params.DESTROY_ONLY } }
-            environment {
-                // Chemin unique : seules les collections du projet sont résolues,
-                // pas celles de /usr/lib/python3/dist-packages.
-                ANSIBLE_COLLECTIONS_PATH = "${WORKSPACE}/.ansible/collections"
-            }
             steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-key-onprem',
+                                  keyFileVariable: 'ONPREM_KEY_FILE',
+                                  usernameVariable: 'ONPREM_USER')]) {
                     sh '''#!/bin/bash
 set -euo pipefail
-mkdir -p security
+chmod 600 "$ONPREM_KEY_FILE"
 
-echo "=== Installation des collections du projet (source unique : ansible/requirements.yml) ==="
-ansible-galaxy collection install -r ansible/requirements.yml -p .ansible/collections --force
+KNOWN_HOSTS="$WORKSPACE/.ssh_known_hosts"
+touch "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+ssh-keyscan -T 5 -H "$ONPREM_IP" >> "$KNOWN_HOSTS" 2>/dev/null \
+    || echo "AVERTISSEMENT: ssh-keyscan a échoué, la clé d'hôte sera acceptée au premier contact (accept-new)"
 
-echo "=== Collections résolues ==="
-ansible-galaxy collection list -p .ansible/collections
+mkdir -p ansible/inventory
+cat > ansible/inventory/onprem.ini <<EOF
+[onprem]
+$ONPREM_IP ansible_user=$ONPREM_USER ansible_ssh_private_key_file=$ONPREM_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS'
+EOF
+chmod 600 ansible/inventory/onprem.ini
 
-echo "=== Scan ansible-lint ==="
 cd ansible
-ansible-lint playbook.yml -f codeclimate > ../security/ansible-lint-report.json
+
+# Retry : pas de stage "Wait for SSH" côté on-prem, on absorbe une latence transitoire.
+for i in 1 2 3; do
+    ansible -i inventory/onprem.ini onprem -m ping && break
+    [ "$i" = 3 ] && { echo "VM on-prem injoignable après 3 tentatives"; exit 1; }
+    echo "Ping $i/3 échoué, nouvelle tentative dans 10s..."
+    sleep 10
+done
+
+ansible-playbook -i inventory/onprem.ini playbook.yml -b
 '''
+                }
+            }
+            post {
+                always {
+                    // Nettoyage défensif : ne pas attendre le cleanWs() global
+                    // (le fichier contient l'IP interne et le chemin de la clé).
+                    sh 'rm -f ansible/inventory/onprem.ini'
                 }
             }
         }
