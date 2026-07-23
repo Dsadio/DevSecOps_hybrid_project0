@@ -141,21 +141,33 @@ fi
 
         // ══════════════════════════════════════════════
         // ÉTAPE 4 : Vérification de la qualité Ansible (UNSTABLE si findings)
-        // Utilise ANSIBLE_COLLECTIONS_PATH : community.general résolue
-        // depuis les collections épinglées du workspace.
+        // Collections épinglées du projet UNIQUEMENT : installation depuis
+        // ansible/requirements.yml + ANSIBLE_COLLECTIONS_PATH restreint au
+        // workspace, pour ignorer community.general 9.5.2 du système.
         // ══════════════════════════════════════════════
         stage('Quality - ansible-lint') {
             when { expression { return !params.DESTROY_ONLY } }
+            environment {
+                // Chemin unique : seules les collections du projet sont résolues,
+                // pas celles de /usr/lib/python3/dist-packages.
+                ANSIBLE_COLLECTIONS_PATH = "${WORKSPACE}/.ansible/collections"
+            }
             steps {
-                dir('ansible') {
-                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                        sh '''#!/bin/bash
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh '''#!/bin/bash
 set -euo pipefail
-mkdir -p ../security
+mkdir -p security
+
+echo "=== Installation des collections du projet (source unique : ansible/requirements.yml) ==="
+ansible-galaxy collection install -r ansible/requirements.yml -p .ansible/collections --force
+
+echo "=== Collections résolues ==="
+ansible-galaxy collection list -p .ansible/collections
+
 echo "=== Scan ansible-lint ==="
+cd ansible
 ansible-lint playbook.yml -f codeclimate > ../security/ansible-lint-report.json
 '''
-                    }
                 }
             }
         }
