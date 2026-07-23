@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 resource "random_id" "suffix" {
   byte_length = 4
 }
@@ -45,25 +47,54 @@ resource "aws_s3_bucket_logging" "logs" {
   target_prefix = "logs/"
 }
 
-resource "aws_s3_bucket_policy" "logs_tls_only" {
+# Policy unique du bucket : TLS obligatoire + autorisation VPC Flow Logs.
+# Un bucket ne peut avoir qu'une seule policy : les deux besoins sont fusionnés ici.
+resource "aws_s3_bucket_policy" "logs" {
   bucket = aws_s3_bucket.logs.id
 
   depends_on = [aws_s3_bucket_public_access_block.logs]
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid       = "DenyInsecureTransport"
-      Effect    = "Deny"
-      Principal = "*"
-      Action    = "s3:*"
-      Resource = [
-        aws_s3_bucket.logs.arn,
-        "${aws_s3_bucket.logs.arn}/*"
-      ]
-      Condition = {
-        Bool = { "aws:SecureTransport" = "false" }
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.logs.arn,
+          "${aws_s3_bucket.logs.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
+      {
+        Sid       = "AWSLogDeliveryWrite"
+        Effect    = "Allow"
+        Principal = { Service = "delivery.logs.amazonaws.com" }
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.logs.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl"      = "bucket-owner-full-control"
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid       = "AWSLogDeliveryAclCheck"
+        Effect    = "Allow"
+        Principal = { Service = "delivery.logs.amazonaws.com" }
+        Action    = "s3:GetBucketAcl"
+        Resource  = aws_s3_bucket.logs.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
       }
-    }]
+    ]
   })
 }

@@ -8,11 +8,15 @@ resource "aws_vpc" "main" {
   }
 }
 
+# Flow Logs vers S3 : dépend explicitement de la bucket policy,
+# sinon AWS refuse la création (Access Denied for LogDestination).
 resource "aws_flow_log" "main" {
   vpc_id               = aws_vpc.main.id
   traffic_type         = "ALL"
   log_destination_type = "s3"
   log_destination      = aws_s3_bucket.logs.arn
+
+  depends_on = [aws_s3_bucket_policy.logs]
 
   tags = {
     Name = "flowlog-devsecops"

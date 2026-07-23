@@ -1,7 +1,18 @@
 ---
-- name: Installation et configuration sécurisée d'Apache
+- name: Déploiement sécurisé d'un site statique Apache2 (DevSecOps)
   hosts: all
   become: true
+
+  vars:
+    web_root: /var/www/html
+    site_files:
+      - index.html
+      - style.css
+      - script.js
+    apache_modules_disabled:
+      - autoindex
+      - status
+      - userdir
 
   tasks:
 
@@ -11,26 +22,20 @@
         update_cache: true
         cache_valid_time: 3600
 
-
-    # 2. Installation d'Apache
-    - name: Installation d'Apache
+    # 2. Installation d'Apache2
+    - name: Installation d'Apache2
       ansible.builtin.apt:
         name: apache2
         state: present
 
-
-    # 3. Désactivation des modules Apache inutiles (idempotent, non interactif)
+    # 3. Désactivation des modules Apache inutiles
     - name: Désactiver les modules Apache inutiles
       community.general.apache2_module:
         name: "{{ item }}"
         state: absent
         force: true
-      loop:
-        - autoindex
-        - status
-        - userdir
+      loop: "{{ apache_modules_disabled }}"
       notify: Restart apache
-
 
     # 4. Activation du module headers
     - name: Activer le module headers
@@ -38,7 +43,6 @@
         name: headers
         state: present
       notify: Restart apache
-
 
     # 5. Configuration des en-têtes de sécurité HTTP
     - name: Configurer les en-têtes de sécurité
@@ -53,7 +57,6 @@
         mode: '0644'
       notify: Restart apache
 
-
     # 6. Activation de la configuration sécurité
     - name: Activer la configuration des en-têtes de sécurité
       ansible.builtin.command:
@@ -62,35 +65,47 @@
         creates: /etc/apache2/conf-enabled/security-headers.conf
       notify: Restart apache
 
-
-    # 7. Suppression de la page Apache par défaut
-    - name: Supprimer la page Apache par défaut
+    # 7. Répertoire web
+    - name: S'assurer que le répertoire web existe
       ansible.builtin.file:
-        path: /var/www/html/index.html
-        state: absent
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
 
-
-    # 8. Déploiement de la page personnalisée
-    - name: Déployer la page d'accueil personnalisée
+    # 8. Déploiement du site (index.html remplace la page Apache par défaut)
+    - name: Déployer les fichiers du site statique
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/files/index.html"
-        dest: /var/www/html/index.html
+        src: "files/{{ item }}"
+        dest: "{{ web_root }}/{{ item }}"
         owner: www-data
         group: www-data
         mode: '0644'
+      loop: "{{ site_files }}"
+      notify: Restart apache
 
-
-    # 9. Vérification du service Apache
+    # 9. Service Apache démarré et activé au boot
     - name: S'assurer qu'Apache est démarré et activé au démarrage
       ansible.builtin.service:
         name: apache2
         state: started
         enabled: true
 
+    # 10. Test HTTP du service
+    - name: Vérifier que le site répond en HTTP (code 200)
+      ansible.builtin.uri:
+        url: http://localhost/
+        status_code: 200
+        return_content: false
+      register: http_check
+      retries: 3
+      delay: 5
+      until: http_check.status == 200
+      changed_when: false
 
   handlers:
 
-    # Redémarrage Apache après modification
     - name: Restart apache
       ansible.builtin.service:
         name: apache2
