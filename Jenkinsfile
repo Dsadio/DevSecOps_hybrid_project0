@@ -351,7 +351,7 @@ ansible-playbook -i inventory/onprem.ini playbook.yml -b
             }
         }
 
-        // ══════════════════════════════════════════════
+       // ══════════════════════════════════════════════
         // ÉTAPE 9 : Tests fonctionnels (EC2 public)
         // ══════════════════════════════════════════════
         stage('Functional Tests') {
@@ -359,15 +359,26 @@ ansible-playbook -i inventory/onprem.ini playbook.yml -b
             steps {
                 sh '''#!/bin/bash
 set -euo pipefail
+
 echo "=== Test HTTP ==="
 curl -fsS -o /dev/null -w "HTTP %{http_code}\\n" "http://$AWS_IP"
 
 echo "=== En-têtes de sécurité ==="
 # HSTS n'est émis qu'en HTTPS : non testé ici sur HTTP.
-curl -sI "http://$AWS_IP" | grep -iE 'X-Frame-Options|X-Content-Type-Options' || echo "AVERTISSEMENT: en-têtes manquants"
+# Les en-têtes sont capturés dans un fichier pour éviter tout pipe direct sur curl.
+HEADERS_FILE="$(mktemp)"
+trap 'rm -f "$HEADERS_FILE" "$PAGE_FILE"' EXIT
+curl -fsS -o /dev/null -D "$HEADERS_FILE" "http://$AWS_IP"
+grep -iE 'X-Frame-Options|X-Content-Type-Options' "$HEADERS_FILE" \
+    || echo "AVERTISSEMENT: en-têtes manquants"
 
 echo "=== Page web accessible ==="
-curl -fsS "http://$AWS_IP" | head -n 5
+# Pas de "curl | head" : head ferme le pipe après 5 lignes, curl reçoit
+# SIGPIPE (code 23) et pipefail fait échouer le stage à tort.
+# On télécharge la page dans un fichier, puis on affiche l'extrait.
+PAGE_FILE="$(mktemp)"
+curl -fsS -o "$PAGE_FILE" "http://$AWS_IP"
+head -n 5 "$PAGE_FILE"
 '''
             }
         }
